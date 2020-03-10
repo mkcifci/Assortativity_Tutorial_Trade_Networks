@@ -1,0 +1,378 @@
+---
+title: "Assortativity Tutorial: Trade Networks"
+author: "Muhammed Cifci"
+date: "3/2/2020"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    code_folding: show
+    highlight: tango
+    theme: united
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r, warning=FALSE,message=FALSE}
+# network packages
+library(sna) 
+library(statnet)
+library(network)
+
+# visualization packages
+library(ggplot2)
+library(ggnetwork)
+library(GGally)
+
+# data manipulation packages
+library(readr)
+library(dplyr)
+library(data.table)
+```
+
+Assortativity is a network property, which refers to the extent to which actors form ties with similar versus dissimilar actors. Homophily considers likelihood of nodes forming ties based on similarity by various node/vertex characteristics. Heterophily is the opposite of homophily and defines a process in which actors who are different from each other are more likely to form ties. This process is the basis for commonly used phrase "birds of a feather, flock together". 
+
+We can think of assortivity as another type of clustering, where clustering occurs based on similarity/dissimilarity of node characteristics. So it is preferential attachment of nodes to other nodes that are similar/dissimilar in numerical or categorical attributes.
+
+A classic example of study of social interactions of homophily is by race. People who belong to same race tend to be more likely to form ties with people of same race. An example of heterophily can be formal academic advising relationships where students are more likely to form ties to faculty for advising than to other students. 
+
+We will use the replication data from "Persistent Patterns of International Commerce" by Michael Ward and Peter Hoff (2007). The replication data includes dyadic trade relationships for countries for 1981-2001, polity scores for each country and degree of cooperation in conflict episodes. 
+
+# 1) Prepare the data
+
+```{r, warning=FALSE,message=FALSE}
+YX<-dget("YX") # Read in the data (data format is list of data frames)
+country_codes <- read_csv("countryContinent.csv") # read in data for region variables
+```
+```{r}
+# create a network object from edgelist for only 1981
+YX_1981 <- YX[[1]][1:9] # Edgelist for only 1981. 
+YX_1981$exp <- as.character(YX_1981$exp) # Change class of variable to character
+YX_1981$imp <- as.character(YX_1981$imp) # Change class of variable to character
+YX_1981 <- YX_1981[YX_1981$ltrade != 0,] # Use 3rd column (trade) to remove any dyad where trade did not occur
+
+# add regional variables to the data to use 'assortativity_nominal'
+setnames(country_codes, "country", "exp") # rename column to merge 'by'
+# only keep variables we want to join
+country_codes <- country_codes %>% select("exp", "continent","sub_region") 
+# join the two data frame
+YX_1981 <- YX_1981 %>% left_join(country_codes, by = "exp") 
+
+# add polity scores as categorical variables 
+YX_1981$polity_cat[YX_1981$pty.exp < -5] <- "autocracy"
+YX_1981$polity_cat[YX_1981$pty.exp > -6 & YX_1981$pty.exp < 6] <- "anocracy"
+YX_1981$polity_cat[YX_1981$pty.exp > 5] <- "democracy"
+
+# create a matrix from YX_el; 1st column exporter, 2nd column importer
+YX_1981_el <- as.matrix(YX_1981[1:2]) 
+YX_1981_node_list <- YX_1981  %>% select(exp, lgdp.exp, pty.exp,continent, sub_region, polity_cat) # Create a nodelist 
+YX_1981_node_list <- YX_1981_node_list[!duplicated(YX_1981_node_list),] # Remove duplicates
+
+# create a network object 
+YX_1981_net1 <- network(YX_1981_el[,1:2], matrix.type = 'edgelist', directed = TRUE) 
+
+network.vertex.names(YX_1981_net1) # check node names; 82 countries
+
+# set vertix attributes
+set.vertex.attribute(YX_1981_net1, 'lgdp.exp', YX_1981_node_list$lgdp.exp) # lgdp.exp = log GDP of exporter
+set.vertex.attribute(YX_1981_net1, 'pty.exp', YX_1981_node_list$pty.exp) # pty.exp = Polity of exporter
+set.vertex.attribute(YX_1981_net1, 'continent', YX_1981_node_list$continent) # continent
+set.vertex.attribute(YX_1981_net1, 'sub_region', YX_1981_node_list$sub_region) # sub-region
+set.vertex.attribute(YX_1981_net1, 'polity_cat', YX_1981_node_list$polity_cat) # categorical polity score 
+
+# set edge weights
+set.edge.attribute(YX_1981_net1, 'weight', YX_1981$ltrade) # ltrade = log trade (volume of trade)
+# set.edge.value(YX_1981_net1, 'ltrade', YX_1981$ltrade) # ltrade = log trade (volume of trade)
+
+####  set.edge value vs. set.edge.attribute
+# set.edge.value is a convenience function which allows edge attributes to be given in adjacency matrix form, and the assignment form of network.vertex.names is likewise a convenient frontend to set.vertex.attribute for vertex names.
+# When edges are removed, the remaining edge ids are NOT permuted and NULL elements will be left on the list of edges, which may complicate some functions that require eids (such as set.edge.attribute)
+
+# use these to see if the edge attribute is set.
+# get.edge.attribute(YX_1981_net1, 'ltrade') 
+# list.edge.attributes(YX_1981_net1)s
+
+# make sure the weights are recorded correctly
+head(YX_1981[1:3],5) # This is the original data 
+head(as.edgelist(YX_1981_net1, 'weight'),5) # This is edgelist extracted from the network
+# get.vertex.attribute(YX_1981_net1, 'vertex.names') # Use this to see if the ids make sense
+
+# look at a summary of the network object 
+summary.network(YX_1981_net1, # the network we want to look at
+                print.adj = FALSE # if TRUE then this will print out the whole adjacency matrix.
+                )
+```
+
+In **Figure 1**, I illustrate histograms of the two node attributes provided in the data, log(GDP) and polity score, for 1981. Left plot indicate that there is a right skewed distribution for log(GDP); there ar few countries that have very strong economies. The maximum log(GDP) value is 28.76, mean is 23.71 and minimum value is 20.16. 
+
+Polity score captures thee regime authority spectrum. The range is interpreted as following: -10 to -6 is autocracy, -5 to 5 is anocracy, and 6-10 is demcocracy. Right plot suggests that the most countries fall in either democracy or autocracy categories. There are not many countries in the middle (-5 to 5 range). The maximum polity distribution is a 10 (full democracy), mean is 1.31 (anocracy) and the minimum value is -10 (autocracy). 
+
+```{r figs1, echo = FALSE, fig.pos="H", fig.align='center', fig.cap="\\label{fig:figs1} Figure 1: Distributions of vertex attributes", fig.height=5, fig.width=8}
+par(mfrow=c(1,2))
+hist(YX_1981_net1 %v% 'lgdp.exp', main="Log(GDP)",xlab="lgdp.exp")
+#log_GDP_d <- density(YX_1981_net1 %v% 'lgdp.exp')
+#plot(log_GDP_d, main="Density log(GDP)")
+
+hist(YX_1981_net1 %v% 'pty.exp', main="Polity",xlab="pty.exp")
+#polity_d <- density(YX_1981_net1 %v% 'pty.exp')
+#plot(polity_d, main="Density Polity")
+```
+
+# 2) Visualize the network 
+
+It would be difficult to plot labels of all countries, so I choose to plot labels for some of the countries. The mean of log(GDP) is 24.08 and third quartile is 25.34. I create a vertex attribute that capture names of countries that have log(GDP) greater than or equal to 25. 20 countries that have log(GDP) greater than or equal to 25.
+
+```{r}
+YX_1981_node_list$significant_countries <- ifelse(YX_1981_node_list$lgdp.exp >= 25, YX_1981_node_list$exp, NA) # vector of just those 20 countries as labels
+set.vertex.attribute(YX_1981_net1, 'significant_countries', YX_1981_node_list$significant_countries)
+
+set.seed(123)
+YX_1981_net1_fr <- ggnetwork(YX_1981_net1, layout = 'fruchtermanreingold') # weights already defined, but we could have added weight by specifying 'weights="ltrade"'
+YX_1981_net1_kk <- ggnetwork(YX_1981_net1, layout = 'kamadakawai') #layout for kamadakawai (minimal difference from FR layout)
+YX_1981_net1_cir <- ggnetwork(YX_1981_net1, layout = 'circle') #layout for circle (not helpful in this case)
+
+head(YX_1981_net1_fr,5) # show the network 
+```
+
+**Figure 2** represents the trade network for 1981. The network is dense and it is not easy to see the edges easily. I colored nodes by polity scores. I also changed edge sizes based on edge weights, but the visualization became worse.
+
+```{r figs2, echo = FALSE, warning=FALSE, message=FALSE, fig.pos="H", fig.align='center', fig.cap="\\label{fig:figs2} Figure 2: Trade Network for 1981", fig.height=7, fig.width=8}
+# plot with ggplot using different graphs 
+ggplot(data = YX_1981_net1_fr, aes(x, y, xend=xend, yend=yend)) +
+  geom_edges(color="grey", arrow = arrow(length = unit(0.3, "lines"), type = "open"))+ # aes(size=weight) gives edge size proportional to edge weight, but it is messy in this dense network
+  geom_nodes(aes(color = pty.exp), size=3, label.size = 0.25) +
+  geom_nodetext_repel(aes(label = significant_countries)) +
+  theme_blank() +
+  theme(legend.position="bottom") +
+  guides(size = F) +
+  labs(title = 'Trade Network (1981)', color = 'Polity score')
+```
+
+# 3) Apply assortativity measures 
+
+Let us use assortativity measures on this network based on log(GDP), region, and polity scores of countries. Assortartive coefficients based on these vertex attributes can tell us if countries are more likely to form ties with other countries based on similar economic sizes, polity scores and if they share similar region. 
+
+To quantify the level of assortative mixing in the network we can measure the assortativity coefficient. '**igraph**' package in R have three functions to measure assortativity: "**assortativity**", "**assortativity nominal**" and "**assortativity degree**". These functions are based on the equations from Newman (2002,2003). When assortativity coefficient (r) is 0, then there is no assortative mixing. When r=1, theen there is perfect assortative mixing. If the network is prefectly disassortative, then r is negative and has a value between -1 and 0. Perfectly disassortative coefficieent is not simply -1  because these networks are generally closer to a randomly mixed network as compared to perfectly assortative network. When there are multiple vertex types, then random mixing will often pair dissimilar vertices, so netowrk appears to be mainly disassortative. We can think of assortativity coefficient (r) as essentially Pearson correlation coefficient of nodes at either side of a tie.
+
+"**Assortativity nominal**" is used to calculate assortativity coefficient for categorical labels of vertices. It is defined as: 
+
+r=(sum(e(i,i), i) - sum(a(i)b(i), i)) / (1 - sum(a(i)b(i), i)),\
+
+where e(i,j) is the fraction of edges connecting vertices of type i and j, a(i)=sum(e(i,j), j) and b(j)=sum(e(i,j), i).
+
+```{r, warning=FALSE, message=FALSE}
+library(igraph, quietly = TRUE)
+library(intergraph, quietly = TRUE)
+YX_1981_net1_igraph <- asIgraph(YX_1981_net1)
+YX_1981_net1_igraph 
+
+is.weighted(YX_1981_net1_igraph) # check if network has the weights
+
+assortativity.nominal(YX_1981_net1_igraph, types= as.factor(V(YX_1981_net1_igraph)$continent), directed = TRUE) # assortativity coefficient based on continent (region) attribute
+
+assortativity.nominal(YX_1981_net1_igraph, types= as.factor(V(YX_1981_net1_igraph)$sub_region), directed = TRUE) # assortativity coefficient based on  sub-region attribute
+
+assortativity.nominal(YX_1981_net1_igraph, types= as.factor(V(YX_1981_net1_igraph)$polity_cat), directed = TRUE) # assortativity coefficient based on polity categories attribute
+```
+
+Second assortativity function is "**assortativity**". This calculates assortavity based on values assigned to the vertices. It is defined as: 
+
+sum(jk(e(j,k)-q(j)q(k)), j, k) / sigma(q)^2 for undirected graphs (q(i)=sum(e(i,j), j)), and as\
+
+sum(jk(e(j,k)-qout(j)qin(k)), j, k) / sigma(qin) / sigma(qout) for directed ones.
+
+The reason of the difference is that in directed networks the relationship is not symmetric, so it is possible to assign different values to the outgoing and the incoming end of the edges.
+
+```{r}
+assortativity(YX_1981_net1_igraph, types1= V(YX_1981_net1_igraph)$lgdp.exp, types2=NULL, directed = TRUE) # assortativity coefficient based on log GDP
+assortativity(YX_1981_net1_igraph, types1= V(YX_1981_net1_igraph)$lgdp.exp, types2=NULL, directed = TRUE) # assortativity coefficient based on log GDP
+assortativity(YX_1981_net1_igraph, types1= V(YX_1981_net1_igraph)$pty.exp, types2=NULL, directed = TRUE) # assortativity coefficient based on polity score
+
+```
+
+Based on the assortativity coefficient based on log(GDP) is -.149 and bad on polity score is -.036. Hence I can note that the network is dissassortative. Countries are likely to form ties with other states that have dissimilar economic strength (logGDP) and polity score. 
+
+A third function "**assortativity_degree**" uses vertex degree (minus one) as vertex values and calls assortativity. The assortativity degree of the network is -.2. Random network have assortatitivy degree of close to 0.
+
+```{r}
+assortativity_degree(YX_1981_net1_igraph, directed = TRUE) # the degree assortativity of the network
+
+detach("package:igraph",unload=TRUE)
+```
+
+While the assortativity() function in '**igraph**' is useful to calculate assortment in directed or undirected networks, it cannot handle weighted networks. Given that this trade network is a weighted network, it is more interesting to see how weighted edges are affected by assortativity based on node attributes. 
+
+To calculate the assortativity for the weighted trade network, we can use **"assortment.discrete()"** and **"assortment.continuous()"** from the '**assortnet**' package. 
+
+I found **"assortment.discrete()"** useful as it provides a mixing matrix which show the cumulative edge weights that occur between individuals with the same vs. different node labels.
+
+```{r, warning=FALSE, message=FALSE}
+#install.packages('assortnet')
+library(assortnet,quietly = TRUE)
+library(igraph, quietly = TRUE)
+
+adj = as_adjacency_matrix(YX_1981_net1_igraph, sparse=F, attr="weight") #input for assortnet function is an adjacency matrix rather than an igraph object
+
+assortment.continuous(adj, V(YX_1981_net1_igraph)$lgdp.exp, weighted=TRUE) #assortativity coefficient based on log(GDP)
+assortment.continuous(adj, V(YX_1981_net1_igraph)$pty.exp, weighted=TRUE) #assortativity coefficient based on polity score
+
+assortment_r1<-assortment.discrete(adj, V(YX_1981_net1_igraph)$polity_cat, weighted=TRUE) #assortativity coefficient based on polity score
+assortment_r1
+assortment_r2<-assortment.discrete(adj, V(YX_1981_net1_igraph)$continent, weighted=TRUE) #assortativity coefficient based on continent
+assortment_r2
+assortment_r3<-assortment.discrete(adj, V(YX_1981_net1_igraph)$sub_region, weighted=TRUE) #assortativity coefficient based on sub-region
+assortment_r3$r
+
+detach("package:igraph",unload=TRUE)
+```
+
+We can look at how assortativity based on log(GDP) and polity score changes over time. 
+
+```{r, warning=FALSE, message=FALSE}
+Assortativity_lgdp <- numeric(20)
+Assortativity_polity <- numeric(20)
+Assortativity_degree <- numeric(20)
+assortment.lgdp <- numeric(20)
+assortment.pty <- numeric(20)
+Assortativity_polity_cat <- numeric(20)
+assortment.polity_cat <- numeric(20)
+assortment_dem_dem <- numeric(20)
+assortment_aut_aut <- numeric(20)
+
+Assortativity_year <- 1:20
+
+for (i in 1:20) {
+# create a network object from edgelist for only 1981
+YX_year<- YX[[i]][1:9] # Edgelist for only 1981. 
+YX_year$exp <- as.character(YX_year$exp) # Change class of variable to character
+YX_year$imp <- as.character(YX_year$imp) # Change class of variable to character
+YX_year<- YX_year[YX_year$ltrade != 0,] # Use 3rd column (trade) to remove any dyad where trade did not occur
+
+# add polity scores as categorical variables 
+YX_year$polity_cat[YX_year$pty.exp < -5] <- "autocracy"
+YX_year$polity_cat[YX_year$pty.exp > -6 & YX_year$pty.exp < 6] <- "anocracy"
+YX_year$polity_cat[YX_year$pty.exp > 5] <- "democracy"
+
+YX_year_el <- as.matrix(YX_year[1:2]) # Create a matrix from YX_el; 1st column exporter, 2nd column importer
+YX_year_node_list <- YX_year  %>% select(exp, lgdp.exp, pty.exp, polity_cat) # Create a nodelist 
+YX_year_node_list <- YX_year_node_list[!duplicated(YX_year_node_list),] # Remove duplicates
+
+YX_year_net <- network(YX_year_el[,1:2], matrix.type = 'edgelist', directed = TRUE) # Create a network object 
+
+# set vertix attributes
+set.vertex.attribute(YX_year_net, 'lgdp.exp', YX_year_node_list$lgdp.exp) # lgdp.exp = log GDP of exporter
+set.vertex.attribute(YX_year_net, 'pty.exp', YX_year_node_list$pty.exp) # pty.exp = Polity of exporter
+set.vertex.attribute(YX_year_net, 'polity_cat', YX_year_node_list$polity_cat) # sub-region
+
+# set edge attributes
+set.edge.attribute(YX_year_net, 'ltrade', YX_year$ltrade) # ltrade = log trade (volume of trade)
+#set.edge.attribute(YX_year_net, 'ldist', YX_year$ldist) # ldist = log distance of two countries
+#set.edge.attribute(YX_year_net, 'cc', YX_year$cc) # degree of cooperation in conflict episodes
+
+# set edge weight
+set.edge.value(YX_year_net, 'weight', YX_year$ltrade) # edge weight based on volume of trade
+
+library(igraph, quietly = TRUE)
+library(intergraph, quietly = TRUE)
+
+YX_year_net_igraph <- asIgraph(YX_year_net)
+
+Assortativity_polity_cat[i] <- assortativity_nominal(YX_year_net_igraph, types= as.factor(V(YX_year_net_igraph)$polity_cat), directed = TRUE) # assortativity coefficient based on polity categories attribute
+Assortativity_lgdp[i] <- assortativity(YX_year_net_igraph, types1= V(YX_year_net_igraph)$lgdp.exp, directed = TRUE) # assortativity coefficient based on log GDP
+Assortativity_polity[i] <- assortativity(YX_year_net_igraph, types1= V(YX_year_net_igraph)$pty.exp, directed = TRUE) # assortativity coefficient based on polity score 
+Assortativity_degree[i] <- assortativity_degree(YX_year_net_igraph, directed = TRUE) # the degree assortativity of the network
+
+adj = as_adjacency_matrix(YX_year_net_igraph, sparse=F, attr="weight") #input for assortnet function is an adjacency matrix rather than an igraph object
+assortment.lgdp[i] <- assortment.continuous(adj, V(YX_year_net_igraph)$lgdp.exp, weighted=TRUE) #assortativity coefficient based on log(GDP)
+assortment.pty[i] <- assortment.continuous(adj, V(YX_year_net_igraph)$pty.exp, weighted=TRUE) #assortativity coefficient based on polity score
+assortment.polity_cat[i] <- assortment.discrete(adj, V(YX_year_net_igraph)$polity_cat, weighted=TRUE) #assortativity coefficient based on polity score
+
+
+assortment_r1<-assortment.discrete(adj, V(YX_year_net_igraph)$polity_cat, weighted=TRUE) #assortativity coefficient based on polity score
+assortment_dem_dem[i] <- assortment_r1$mixing_matrix[2,2]
+assortment_aut_aut[i] <- assortment_r1$mixing_matrix[1,1]
+
+detach("package:igraph",unload=TRUE)
+detach("package:intergraph",unload=TRUE)
+}
+
+assortativity_df <- as.data.frame(cbind(Assortativity_year, Assortativity_lgdp,Assortativity_polity,
+                                        Assortativity_degree, assortment.lgdp, assortment.pty,
+                                        Assortativity_polity_cat, assortment.polity_cat, 
+                                        assortment_dem_dem, assortment_aut_aut))
+
+assortativity_df[] <- lapply(assortativity_df, as.numeric) # convert columns to numeric class 
+```
+
+# 4) Visualize assortativity coefficients
+
+**Figure 3** shows the assortativity coefficients for lgdp, polity (numerical) and network using both '**igraph**' and '**assortnet**. Coefficients from **igraph** are starts with "Assortativity_" and coefficients from '**assortnet**' start with "assortmenet.". Although assortativity measures from '**igraph**' do not account for network weights, they provided very similar coefficients to the ones from '**assortnet**'. 
+
+```{r figs3, echo = FALSE, fig.pos="H", fig.align='center', fig.cap="\\label{fig:figs3} Figure 3: Assortativity coefficients 1981-2001 ", fig.height=5, fig.width=8}
+ggplot(assortativity_df) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=Assortativity_lgdp, 
+                                                         color="Assortativity_lgdp"))+
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=Assortativity_polity,
+                                                         color="Assortativity_polity")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=Assortativity_degree,
+                                                         color="Assortativity_degree")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment.lgdp, 
+                                                         color="assortment.lgdp")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment.pty, 
+                                                         color="assortment.pty")) + 
+                    labs(x="Time (By Year)",y="Assortativity coefficient") + 
+                     scale_colour_manual(name='Legend', 
+                                         values=c('Assortativity_lgdp'='green4', 'Assortativity_polity'='dodgerblue4',
+                                                  'Assortativity_degree'='black', 'assortment.lgdp'='red4',
+                                                  'assortment.pty'='violet')) +
+                    theme_bw() + 
+                    theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+```
+
+Leeds (1999) finds empirical support for the hypothesis that democracies are less likely to cheat and less likely to enter agreements with risk of cheating. Hence democracies tend to cooperate with other democracies. Bliss & Russett (1998) find support of greater trade cooperation between democracies.
+
+**Figure 4** illustrate the assortativity coefficients based on numerical and categorical polity attributes. Both types of polity attributes (numerical and categorical) seem to be highly correlated. 
+
+```{r figs4, echo = FALSE, fig.pos="H", fig.align='center', fig.cap="\\label{fig:figs4} Figure 4: Assortativity coefficients based on polity (numerical and categorical) 1981-2001 ", fig.height=5, fig.width=8}
+ggplot(assortativity_df) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=Assortativity_polity,
+                                                         color="Assortativity_polity")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment.pty, 
+                                                         color="assortment.pty")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=Assortativity_polity_cat,
+                                                         color="Assortativity_polity_cat")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment.polity_cat, 
+                                                         color="assortment.polity_cat")) + 
+                    labs(x="Time (By Year)",y="Assortativity coefficient") + 
+                     scale_colour_manual(name='Legend', 
+                                         values=c('Assortativity_polity'='dodgerblue4','assortment.pty'='violet',
+                                                  'Assortativity_polity_cat'='red4','assortment.polity_cat'='green4')) +
+                    theme_bw() + 
+                    theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+```
+
+It is interesting to see the distribution of edge weights (% of total weight) between each polity group. 
+
+We can use the mixing matrix that is returned from using **"assortment.discrete"** function from **'assortnet'** to visualize the edge weights by categories. I only present democracy to democracy and autocracy to autocracy relationships in **Figure 5**.
+
+
+```{r figs5, echo = FALSE, fig.pos="H", fig.align='center', fig.cap="\\label{fig:figs5} Figure 5: Distribution of edge weights (% of total weight) based on similar polity category (for democracies and autocracies 1981-2001)", fig.height=5, fig.width=8}
+ggplot(assortativity_df) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment_dem_dem,
+                                                         color="assortment_dem_dem")) + 
+                    geom_line(data=assortativity_df, aes(x=Assortativity_year, y=assortment_aut_aut, 
+                                                         color="assortment_aut_aut")) + 
+                    labs(x="Time (By Year)",y="Distribution of edge weights (% of total weight)") + 
+                     scale_colour_manual(name='Legend', 
+                                         values=c('assortment_dem_dem'='dodgerblue4',
+                                                  'assortment_aut_aut'='red4')) +
+                    theme_bw() + 
+                    theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(), axis.line = element_line(colour = "black"))
+
+```

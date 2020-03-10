@@ -1,5 +1,4 @@
 # Assortativity Tutorial: Trade Networks
-
 ### Data Files:
 YX.txt = data with Y and Xs for 1981-2001 
 countryContinent.csv	= country regional data
